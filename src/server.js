@@ -1,36 +1,60 @@
+import { readFileSync } from "node:fs";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 import {
+  INPUT_MODES,
+  OUTPUT_MODES,
+  LlmRouterError,
   capturePane,
+  checkProviders,
   ensureSession,
   headlessAsk,
+  killSession,
   listProviders,
   sendInput,
   status,
+  terminateChildren,
   tmuxAsk,
   waitForResponse,
   waitForStart,
   writeInputFile
 } from "./core.js";
 
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+
+// Longer delays overflow Node's timers.
+const MAX_MS = 2147483647;
+const millis = () => z.number().int().positive().max(MAX_MS);
+
 const providerSchema = z
-  .enum(["codex", "claude", "grok", "antigravity", "agy", "gemini", "gpt", "openai", "xai"])
-  .describe("LLM provider. Aliases: agy/gemini -> antigravity, gpt/openai -> codex, xai -> grok.");
+  .enum([
+    "codex",
+    "claude",
+    "grok",
+    "antigravity",
+    "agy",
+    "gemini",
+    "google",
+    "gpt",
+    "openai",
+    "xai"
+  ])
+  .describe(
+    "LLM provider. Aliases: agy/gemini/google -> antigravity, gpt/openai -> codex, xai -> grok."
+  );
 
 const optionalCommon = {
   provider: providerSchema,
   sessionName: z
     .string()
     .optional()
-    .describe("tmux session name. Defaults to llm-router provider defaults such as codex-mcp."),
-  timeoutMs: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe("Maximum wait time in milliseconds."),
+    .describe(
+      "tmux session name (letters, numbers, underscore, dash). Defaults to provider defaults such as codex-mcp."
+    ),
+  timeoutMs: millis().optional().describe("Maximum wait time in milliseconds."),
   stateDir: z
     .string()
     .optional()
@@ -38,13 +62,57 @@ const optionalCommon = {
   model: z
     .string()
     .optional()
-    .describe("Provider model to request. Codex/Claude/Grok use CLI flags; Antigravity receives this as an in-prompt instruction because agy exposes no model flag.")
+    .describe("Provider model to request, passed to the CLI's model flag.")
 };
+
+const nonceSchema = z
+  .string()
+  .optional()
+  .describe(
+    "Optional caller-supplied unique nonce (6-96 letters, numbers, underscore, dash). Generated when omitted."
+  );
+
+const sessionCreation = {
+  command: z
+    .union([z.string(), z.array(z.string()).min(1)])
+    .optional()
+    .describe(
+      "Command used only if the tmux session must be created. A string runs through tmux's default-shell; a list runs directly as program and arguments."
+    ),
+  cwd: z
+    .string()
+    .optional()
+    .describe(
+      "Working directory used only if the tmux session must be created. Defaults to a provider scratch workdir."
+    ),
+  trustCwd: z
+    .boolean()
+    .optional()
+    .describe(
+      "Answer the CLI's folder-trust prompt with yes. Defaults to true only for the router's own scratch workdir."
+    ),
+  columns: z.number().int().positive().optional(),
+  rows: z.number().int().positive().optional()
+};
+
+const inputModeSchema = z
+  .enum(INPUT_MODES)
+  .optional()
+  .describe(
+    "How the request reaches the TUI: paste the whole prompt, or paste one line asking the model to read the prompt file. Defaults to file on Windows (except Claude) and paste elsewhere."
+  );
+
+const outputModeSchema = z
+  .enum(OUTPUT_MODES)
+  .optional()
+  .describe(
+    "How the answer comes back: file (default) has the model write it to a Markdown file, with the pane as fallback; pane reads it from the tmux pane between the markers."
+  );
 
 export async function main() {
   const server = new McpServer({
     name: "llm-router-mcp",
-    version: "0.1.0"
+    version
   });
 
   server.registerTool(
@@ -52,10 +120,18 @@ export async function main() {
     {
       title: "List LLM providers",
       description:
-        "Show the providers supported by llm-router-mcp, their default sessions, model defaults, and model flag support.",
-      inputSchema: {}
+        "Show the providers supported by llm-router-mcp, their default sessions, models, and input modes. With check=true, also report whether tmux and each CLI can be found.",
+      inputSchema: {
+        check: z
+          .boolean()
+          .optional()
+          .describe("Also look up tmux and each provider CLI on PATH.")
+      }
     },
-    async () => jsonContent({ providers: listProviders() })
+    tool(async ({ check }) => ({
+      providers: listProviders(),
+      ...(check ? { check: await checkProviders() } : {})
+    }))
   );
 
   server.registerTool(
@@ -74,7 +150,7 @@ export async function main() {
         stateDir: optionalCommon.stateDir
       }
     },
-    async (args) => jsonContent(await writeInputFile(args))
+    tool(async (args) => await writeInputFile(args))
   );
 
   server.registerTool(
@@ -82,26 +158,17 @@ export async function main() {
     {
       title: "Start persistent LLM tmux session",
       description:
-        "Create or reuse a provider tmux session. Reusing the session preserves conversation context.",
+        "Create or reuse a provider tmux session and wait until the CLI shows its input prompt. Reusing the session preserves conversation context.",
       inputSchema: {
         provider: optionalCommon.provider,
         sessionName: optionalCommon.sessionName,
-        command: z
-          .string()
-          .optional()
-          .describe("Command tmux should run when creating the session. Overrides provider defaults."),
         model: optionalCommon.model,
-        cwd: z
-          .string()
-          .optional()
-          .describe("Working directory for a newly created session. Defaults to a provider scratch workdir."),
         timeoutMs: optionalCommon.timeoutMs,
         stateDir: optionalCommon.stateDir,
-        columns: z.number().int().positive().optional(),
-        rows: z.number().int().positive().optional()
+        ...sessionCreation
       }
     },
-    async (args) => jsonContent(await ensureSession(args))
+    tool(async (args, extra) => await ensureSession({ ...args, signal: extra.signal }))
   );
 
   server.registerTool(
@@ -113,27 +180,17 @@ export async function main() {
       inputSchema: {
         provider: optionalCommon.provider,
         inputPath: z.string().describe("Absolute or relative path to a .md/.markdown input file."),
-        nonce: z
-          .string()
-          .optional()
-          .describe("Optional caller-supplied unique nonce. Generated when omitted."),
+        nonce: nonceSchema,
         sessionName: optionalCommon.sessionName,
-        command: z
-          .string()
-          .optional()
-          .describe("Command used only if the tmux session must be created."),
         model: optionalCommon.model,
-        cwd: z
-          .string()
-          .optional()
-          .describe("Working directory used only if the tmux session must be created."),
+        inputMode: inputModeSchema,
+        outputMode: outputModeSchema,
         timeoutMs: optionalCommon.timeoutMs,
         stateDir: optionalCommon.stateDir,
-        columns: z.number().int().positive().optional(),
-        rows: z.number().int().positive().optional()
+        ...sessionCreation
       }
     },
-    async (args) => jsonContent(await sendInput(args))
+    tool(async (args, extra) => await sendInput({ ...args, signal: extra.signal }))
   );
 
   server.registerTool(
@@ -147,12 +204,12 @@ export async function main() {
         nonce: z.string().describe("Nonce returned by llm_tmux_send."),
         sessionName: optionalCommon.sessionName,
         timeoutMs: optionalCommon.timeoutMs,
-        pollMs: z.number().int().positive().optional(),
+        pollMs: millis().optional(),
         captureLines: z.number().int().positive().optional(),
         stateDir: optionalCommon.stateDir
       }
     },
-    async (args) => jsonContent(await waitForStart(args))
+    tool(async (args, extra) => await waitForStart({ ...args, signal: extra.signal }))
   );
 
   server.registerTool(
@@ -166,12 +223,19 @@ export async function main() {
         nonce: z.string().describe("Nonce returned by llm_tmux_send."),
         sessionName: optionalCommon.sessionName,
         timeoutMs: optionalCommon.timeoutMs,
-        pollMs: z.number().int().positive().optional(),
+        pollMs: millis().optional(),
         captureLines: z.number().int().positive().optional(),
         stateDir: optionalCommon.stateDir
       }
     },
-    async (args) => jsonContent(await waitForResponse(args))
+    tool(
+      async (args, extra) =>
+        await waitForResponse({
+          ...args,
+          signal: extra.signal,
+          onProgress: progressSender(extra)
+        })
+    )
   );
 
   server.registerTool(
@@ -183,29 +247,22 @@ export async function main() {
       inputSchema: {
         provider: optionalCommon.provider,
         inputPath: z.string().describe("Absolute or relative path to a .md/.markdown input file."),
-        nonce: z
-          .string()
-          .optional()
-          .describe("Optional caller-supplied unique nonce. Generated when omitted."),
+        nonce: nonceSchema,
         sessionName: optionalCommon.sessionName,
-        command: z
-          .string()
-          .optional()
-          .describe("Command used only if the tmux session must be created."),
         model: optionalCommon.model,
-        cwd: z
-          .string()
-          .optional()
-          .describe("Working directory used only if the tmux session must be created."),
+        inputMode: inputModeSchema,
+        outputMode: outputModeSchema,
         timeoutMs: optionalCommon.timeoutMs,
-        pollMs: z.number().int().positive().optional(),
+        pollMs: millis().optional(),
         captureLines: z.number().int().positive().optional(),
         stateDir: optionalCommon.stateDir,
-        columns: z.number().int().positive().optional(),
-        rows: z.number().int().positive().optional()
+        ...sessionCreation
       }
     },
-    async (args) => jsonContent(await tmuxAsk(args))
+    tool(
+      async (args, extra) =>
+        await tmuxAsk({ ...args, signal: extra.signal, onProgress: progressSender(extra) })
+    )
   );
 
   server.registerTool(
@@ -225,10 +282,7 @@ export async function main() {
           .optional()
           .describe("Markdown prompt content. Written to inputPath automatically when inputPath is omitted."),
         filename: z.string().optional(),
-        nonce: z
-          .string()
-          .optional()
-          .describe("Optional caller-supplied unique nonce. Generated when omitted."),
+        nonce: nonceSchema,
         model: optionalCommon.model,
         cwd: z
           .string()
@@ -238,7 +292,7 @@ export async function main() {
         stateDir: optionalCommon.stateDir
       }
     },
-    async (args) => jsonContent(await headlessAsk(args))
+    tool(async (args, extra) => await headlessAsk({ ...args, signal: extra.signal }))
   );
 
   server.registerTool(
@@ -257,7 +311,7 @@ export async function main() {
         lines: z.number().int().positive().optional()
       }
     },
-    async (args) => jsonContent(await status(args))
+    tool(async (args) => await status(args))
   );
 
   server.registerTool(
@@ -271,10 +325,88 @@ export async function main() {
         lines: z.number().int().positive().optional()
       }
     },
-    async (args) => jsonContent({ paneText: await capturePane(args) })
+    tool(async (args) => ({ paneText: await capturePane(args) }))
+  );
+
+  server.registerTool(
+    "llm_tmux_kill",
+    {
+      title: "Kill persistent LLM tmux session",
+      description:
+        "Kill a provider tmux session. Its conversation context is lost; the next tmux call starts a fresh CLI.",
+      inputSchema: {
+        provider: optionalCommon.provider,
+        sessionName: optionalCommon.sessionName
+      }
+    },
+    tool(async (args) => ({ killed: await killSession(args) }))
   );
 
   await server.connect(new StdioServerTransport());
+
+  // When the client goes away, abort running tool calls (their abort handlers
+  // stop waits and kill headless CLIs) and make sure no CLI outlives us.
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    // Synchronously, before aborting the calls: a kill started from an abort
+    // handler may not have run by the time the process exits.
+    terminateChildren();
+    try {
+      await server.close();
+    } catch {
+      // Closing is best effort.
+    }
+    process.exit(0);
+  };
+  process.stdin.on("end", shutdown);
+  process.stdin.on("close", shutdown);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, shutdown);
+  }
+}
+
+function tool(handler) {
+  return async (args, extra) => {
+    try {
+      return jsonContent(await handler(args, extra));
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                error: error instanceof Error ? error.message : String(error),
+                ...(error instanceof LlmRouterError ? { details: error.details } : {})
+              },
+              null,
+              2
+            )
+          }
+        ]
+      };
+    }
+  };
+}
+
+function progressSender(extra) {
+  const progressToken = extra?._meta?.progressToken;
+  if (progressToken === undefined) {
+    return undefined;
+  }
+  let progress = 0;
+  return async ({ message }) => {
+    progress += 1;
+    await extra.sendNotification({
+      method: "notifications/progress",
+      params: { progressToken, progress, message }
+    });
+  };
 }
 
 function jsonContent(value) {
