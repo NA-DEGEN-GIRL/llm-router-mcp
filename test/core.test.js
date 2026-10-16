@@ -578,6 +578,7 @@ tmuxTest("tmux wait returns timeout state and Markdown fallback when done marker
     sessionName,
     nonce: sent.nonce,
     timeoutMs: 300,
+    maxWaitMs: 300,
     pollMs: 50,
     stateDir
   });
@@ -586,6 +587,41 @@ tmuxTest("tmux wait returns timeout state and Markdown fallback when done marker
   assert.equal(waited.timedOut, true);
   assert.match(waited.fallbackPath, /\.fallback\.md$/);
   assert.match(await fs.readFile(waited.fallbackPath, "utf8"), /timed out/);
+
+  // A screen that stopped changing ends the wait before the time is up.
+  const stalled = await waitForResponse({
+    provider: "grok",
+    sessionName,
+    nonce: sent.nonce,
+    timeoutMs: 60000,
+    stallMs: 1500,
+    pollMs: 50,
+    stateDir
+  });
+  assert.equal(stalled.stalled, true);
+  assert.equal(stalled.completed, false);
+  assert.ok(stalled.elapsedMs < 10000);
+});
+
+tmuxTest("a wait goes on while the CLI keeps working", async (t) => {
+  const sessionName = uniqueName("extend");
+  cleanupSession(t, "codex", sessionName);
+  // About 4 s of output that keeps the screen moving, against 1 s windows.
+  const { stateDir, inputPath } = await input(t, "codex", "TICKS: 20");
+  const result = await tmuxAsk({
+    provider: "codex",
+    inputPath,
+    sessionName,
+    command: fakeCommand(),
+    cwd: process.cwd(),
+    stateDir,
+    timeoutMs: 1000,
+    maxWaitMs: 30000,
+    pollMs: 50
+  });
+  assert.equal(result.completed, true);
+  assert.ok(result.extensions >= 1, `extensions: ${result.extensions}`);
+  assert.match(result.answer, /fake tmux 1 answer/);
 });
 
 test("headless ask uses one-shot CLI calls and writes Markdown outputs", async (t) => {

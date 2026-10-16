@@ -116,6 +116,21 @@ function interactive() {
 
   function respond(request) {
     requestCount += 1;
+    const ticks = /^TICKS: (\d+)$/m.exec(request);
+    if (ticks) {
+      // A slow answer that keeps the screen moving, like a spinner.
+      let left = Number(ticks[1]);
+      const timer = setInterval(() => {
+        process.stdout.write(`working ${left}\n`);
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(timer);
+          process.stdout.write(answer(request, `tmux ${requestCount}`));
+          process.stdout.write("> ");
+        }
+      }, 200);
+      return;
+    }
     process.stdout.write(answer(request, `tmux ${requestCount}`));
     process.stdout.write("> ");
   }

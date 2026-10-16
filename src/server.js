@@ -54,7 +54,11 @@ const optionalCommon = {
     .describe(
       "tmux session name (letters, numbers, underscore, dash). Defaults to provider defaults such as codex-mcp."
     ),
-  timeoutMs: millis().optional().describe("Maximum wait time in milliseconds."),
+  timeoutMs: millis()
+    .optional()
+    .describe(
+      "Wait time in milliseconds. For a tmux answer this is one window (default 10 minutes), extended while the CLI keeps working up to maxWaitMs; for a headless call the whole limit (default 25 minutes); a new session gets at most 60 seconds to show its prompt."
+    ),
   stateDir: z
     .string()
     .optional()
@@ -63,6 +67,15 @@ const optionalCommon = {
     .string()
     .optional()
     .describe("Provider model to request, passed to the CLI's model flag.")
+};
+
+const waitExtension = {
+  maxWaitMs: millis()
+    .optional()
+    .describe("Cap on a tmux answer wait including extensions. Default 25 minutes."),
+  stallMs: millis()
+    .optional()
+    .describe("Stop waiting early when the CLI's screen has not changed for this long. Default 5 minutes.")
 };
 
 const nonceSchema = z
@@ -223,6 +236,7 @@ export async function main() {
         nonce: z.string().describe("Nonce returned by llm_tmux_send."),
         sessionName: optionalCommon.sessionName,
         timeoutMs: optionalCommon.timeoutMs,
+        ...waitExtension,
         pollMs: millis().optional(),
         captureLines: z.number().int().positive().optional(),
         stateDir: optionalCommon.stateDir
@@ -253,6 +267,7 @@ export async function main() {
         inputMode: inputModeSchema,
         outputMode: outputModeSchema,
         timeoutMs: optionalCommon.timeoutMs,
+        ...waitExtension,
         pollMs: millis().optional(),
         captureLines: z.number().int().positive().optional(),
         stateDir: optionalCommon.stateDir,

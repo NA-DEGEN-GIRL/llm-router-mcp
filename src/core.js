@@ -207,8 +207,15 @@ export const PROVIDER_ALIASES = {
 export const INPUT_MODES = ["paste", "file"];
 
 const DEFAULT_CAPTURE_LINES = 4000;
-const DEFAULT_TIMEOUT_MS = 120000;
-const DEFAULT_HEADLESS_TIMEOUT_MS = 600000;
+// A wait for an answer runs in windows: at the end of one it goes on for
+// another while the CLI is still visibly working, up to a total cap, and stops
+// early when the screen has not changed for the stall time. The cap stays under
+// the 30 minutes MCP clients are usually given for one tool call.
+const DEFAULT_TIMEOUT_MS = 600000;
+const DEFAULT_MAX_WAIT_MS = 1500000;
+const DEFAULT_STALL_MS = 300000;
+// Headless CLIs print nothing while they work, so only the cap applies.
+const DEFAULT_HEADLESS_TIMEOUT_MS = DEFAULT_MAX_WAIT_MS;
 const DEFAULT_POLL_MS = 300;
 const DEFAULT_READY_TIMEOUT_MS = 60000;
 const DEFAULT_COLUMNS = 160;
@@ -947,7 +954,8 @@ export async function sendInput(options = {}) {
       sessionName,
       command: options.command,
       cwd: options.cwd,
-      timeoutMs,
+      // timeoutMs is for the answer; starting gets its own minute.
+      timeoutMs: DEFAULT_READY_TIMEOUT_MS,
       stateDir,
       columns: options.columns,
       rows: options.rows,
@@ -1049,7 +1057,12 @@ export async function waitForResponse(options = {}) {
   const provider = normalizeProvider(options.provider);
   const config = providerConfig(provider);
   const sessionName = resolveSessionName(provider, options.sessionName);
-  const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const windowMs = normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const maxWaitMs = Math.max(windowMs, normalizeTimeout(options.maxWaitMs, DEFAULT_MAX_WAIT_MS));
+  const stallMs = normalizeTimeout(
+    options.stallMs ?? process.env.LLM_ROUTER_MCP_STALL_MS,
+    DEFAULT_STALL_MS
+  );
   const pollMs = normalizeTimeout(options.pollMs, DEFAULT_POLL_MS);
   const { nonce, startMarker, doneMarker } = markerSet(
     provider,
@@ -1058,7 +1071,9 @@ export async function waitForResponse(options = {}) {
   const stateDir = path.resolve(options.stateDir || defaultStateDir());
   const captureLines = options.captureLines || DEFAULT_CAPTURE_LINES;
   const startedAt = Date.now();
-  const deadline = startedAt + timeoutMs;
+  const hardDeadline = startedAt + maxWaitMs;
+  let deadline = startedAt + windowMs;
+  let extensions = 0;
   const progress = progressReporter(options.onProgress, startedAt);
   let started = false;
   let startSeenAt = null;
@@ -1100,15 +1115,27 @@ export async function waitForResponse(options = {}) {
       answer: null,
       responsePath: null,
       fallbackPath,
+      elapsedMs: Date.now() - startedAt,
+      extensions,
       paneTail: tailLines(lastPane, 160),
       ...state,
       ...(error ? { error: error instanceof Error ? error.message : String(error) } : {})
     };
   };
 
-  while (Date.now() <= deadline) {
+  for (;;) {
     if (options.signal?.aborted) {
       return await incomplete({ cancelled: true }, "tmux wait was cancelled before done marker");
+    }
+    if (Date.now() > deadline) {
+      // Still working: give it another window, up to the cap.
+      if (Date.now() - lastChangeAt < stallMs && deadline < hardDeadline) {
+        deadline = Math.min(deadline + windowMs, hardDeadline);
+        extensions += 1;
+        await progress.report(`${config.displayName} is still working; waiting longer`, true);
+      } else {
+        break;
+      }
     }
 
     let pane;
@@ -1186,6 +1213,7 @@ export async function waitForResponse(options = {}) {
         startSeenAt,
         completedAt: new Date().toISOString(),
         elapsedMs: Date.now() - startedAt,
+        extensions,
         answer,
         responsePath: response.responsePath,
         responseBytes: response.bytes,
@@ -1207,6 +1235,15 @@ export async function waitForResponse(options = {}) {
       }
     } else {
       promptSince = null;
+    }
+
+    // A working TUI animates a spinner or a timer; a screen frozen this long
+    // belongs to a CLI that is stuck, not busy.
+    if (quietMs >= stallMs) {
+      return await incomplete(
+        { stalled: true, attachCommand: attachCommand(sessionName) },
+        `showed no activity for ${Math.round(quietMs / 1000)}s before done marker`
+      );
     }
 
     if (Date.now() >= nextPaneCheckAt) {
@@ -1326,6 +1363,8 @@ export async function tmuxAsk(options = {}) {
     sessionName: sent.sessionName,
     nonce: sent.nonce,
     timeoutMs: options.timeoutMs,
+    maxWaitMs: options.maxWaitMs,
+    stallMs: options.stallMs,
     pollMs: options.pollMs,
     captureLines: options.captureLines,
     stateDir: options.stateDir,

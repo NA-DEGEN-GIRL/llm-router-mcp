@@ -74,9 +74,9 @@ Add this to `~/.codex/config.toml`:
 [mcp_servers.llm-router]
 command = "node"
 args = ["/absolute/path/to/llm-router-mcp/bin/llm-router-mcp.js"]
-# Codex stops waiting for a tool after 60 seconds by default, which is shorter
-# than most persistent-session answers.
-tool_timeout_sec = 900
+# Codex stops waiting for a tool after 60 seconds by default. Keep this above
+# the router's 25-minute cap on one wait (see "Waiting for answers").
+tool_timeout_sec = 1800
 
 [mcp_servers.llm-router.env]
 LLM_ROUTER_MCP_STATE_DIR = "/absolute/path/to/.local/state/llm-router-mcp"
@@ -187,7 +187,7 @@ Long-running request with separate send and wait:
 
 ```text
 llm_tmux_send(provider="codex", inputPath="/path/to/prompt.md")
-llm_tmux_wait(provider="codex", nonce="nonce-returned-by-send", timeoutMs=900000)
+llm_tmux_wait(provider="codex", nonce="nonce-returned-by-send")
 ```
 
 Specific model:
@@ -267,6 +267,25 @@ Defaults: `paste` everywhere for Claude and on Linux/macOS for all providers;
 After pasting, the router waits for the screen to settle before pressing Enter,
 and presses Enter again (at most twice) if nothing moved afterwards, which
 happens when a TUI took the first Enter as part of the paste.
+
+### Waiting for answers
+
+A wait does not run for one fixed time. It works in windows of `timeoutMs`
+(default 10 minutes): at the end of a window, if the CLI's screen changed
+recently (TUIs animate a spinner or a timer while they work), the wait goes on
+for another window, up to `maxWaitMs` (default 25 minutes) in total. It ends
+early when:
+
+- the CLI exits or its session disappears (checked every 5 seconds),
+- the screen has not changed for `stallMs` (default 5 minutes): the result has
+  `stalled: true` and the attach command,
+- the CLI shows a menu or a `(y/n)` question (`blocked: "prompt"`).
+
+The result reports `extensions` and `elapsedMs`. A request that is still
+running when the wait ends keeps running in its session; call
+`llm_tmux_wait` again with the same nonce to keep waiting. Headless calls
+have no screen to watch, so they get the 25 minutes as one limit. Starting a
+new session gets 60 seconds to show the CLI's input prompt.
 
 ### Startup screens
 
@@ -364,6 +383,7 @@ a fallback file with the whole captured history.
 | `LLM_ROUTER_MCP_<PROVIDER>_CWD` | Working directory instead of the scratch workdir. |
 | `LLM_ROUTER_MCP_<PROVIDER>_SESSION` | Default tmux session name. |
 | `LLM_ROUTER_MCP_PERMISSIONS` | `full` (default) or `scoped`; see [Permissions](#permissions). |
+| `LLM_ROUTER_MCP_STALL_MS` | Default `stallMs`: how long an unchanged screen may last before a wait gives up (300000). |
 | `LLM_ROUTER_MCP_<PROVIDER>_INPUT_MODE`, `LLM_ROUTER_MCP_INPUT_MODE` | `paste` or `file`. |
 | `LLM_ROUTER_MCP_<PROVIDER>_OUTPUT_MODE`, `LLM_ROUTER_MCP_OUTPUT_MODE` | `file` or `pane`. |
 | `LLM_ROUTER_MCP_<PROVIDER>_READY_PATTERN` | Regular expression for the CLI's input prompt. |
@@ -388,7 +408,8 @@ outside the MCP first, then retry. This is especially common for fresh
 Antigravity CLI installs and for Claude's first interactive start.
 
 **Codex gives up after a minute.** Raise `tool_timeout_sec` for the server in
-`~/.codex/config.toml`, or use `llm_tmux_send` and then `llm_tmux_wait`.
+`~/.codex/config.toml` (1800 is above the router's 25-minute cap on one wait),
+or use `llm_tmux_send` and then `llm_tmux_wait`.
 
 **A persistent session is stuck.** Use `llm_tmux_capture`, or attach directly:
 
@@ -402,9 +423,9 @@ Then kill it with `llm_tmux_kill` or:
 tmux kill-session -t claude-mcp
 ```
 
-**A request timed out.** Check the returned fallback or raw response path. For
-long provider runs, prefer `llm_tmux_send` followed by `llm_tmux_wait` with a
-larger `timeoutMs`.
+**A request timed out or stalled.** Check the returned fallback or raw response
+path, or attach to the session. A request that is still running can be waited
+for again with `llm_tmux_wait` and its nonce.
 
 ## Security Notes
 

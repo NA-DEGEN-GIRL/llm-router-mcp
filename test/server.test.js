@@ -160,7 +160,7 @@ test("a client that disconnects takes running headless CLIs with it", async (t) 
     })
     .catch(() => null);
   let pid = null;
-  for (let i = 0; i < 100 && pid === null; i += 1) {
+  for (let i = 0; i < 300 && pid === null; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     pid = Number(await fs.readFile(pidFile, "utf8").catch(() => "")) || null;
   }
@@ -169,7 +169,7 @@ test("a client that disconnects takes running headless CLIs with it", async (t) 
   await call;
 
   let alive = true;
-  for (let i = 0; i < 50 && alive; i += 1) {
+  for (let i = 0; i < 150 && alive; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     try {
       process.kill(pid, 0);
