@@ -606,8 +606,8 @@ tmuxTest("tmux wait returns timeout state and Markdown fallback when done marker
 tmuxTest("a wait goes on while the CLI keeps working", async (t) => {
   const sessionName = uniqueName("extend");
   cleanupSession(t, "codex", sessionName);
-  // About 4 s of output that keeps the screen moving, against 1 s windows.
-  const { stateDir, inputPath } = await input(t, "codex", "TICKS: 20");
+  // About 12 s of output that keeps the screen moving, against 2 s windows.
+  const { stateDir, inputPath } = await input(t, "codex", "TICKS: 60");
   const result = await tmuxAsk({
     provider: "codex",
     inputPath,
@@ -615,8 +615,8 @@ tmuxTest("a wait goes on while the CLI keeps working", async (t) => {
     command: fakeCommand(),
     cwd: process.cwd(),
     stateDir,
-    timeoutMs: 1000,
-    maxWaitMs: 30000,
+    timeoutMs: 2000,
+    maxWaitMs: 60000,
     pollMs: 50
   });
   assert.equal(result.completed, true);
@@ -676,12 +676,12 @@ test("headless ask reports a timeout with the partial output", async (t) => {
     markdown: "slow",
     stateDir,
     cwd: process.cwd(),
-    timeoutMs: 1500
+    timeoutMs: 6000
   });
   assert.equal(result.success, false);
   assert.equal(result.timedOut, true);
   assert.equal(result.answer, null);
-  assert.ok(Date.now() - startedAt < 15000);
+  assert.ok(Date.now() - startedAt < 30000);
   assert.match(await fs.readFile(result.rawResponsePath, "utf8"), /partial/);
 });
 

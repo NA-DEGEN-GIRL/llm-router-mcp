@@ -134,6 +134,7 @@ cancels the request.
 | `llm_tmux_status` | Check whether a session is running, whether its CLI exited, and whether a nonce started or completed. |
 | `llm_tmux_capture` | Capture recent `tmux` pane text for debugging stuck sessions. |
 | `llm_tmux_kill` | Kill a provider session. Its context is lost; the next call starts a fresh CLI. |
+| `llm_x_search` | Search X (Twitter) through Grok and get structured posts with their photos and videos. See [X search](#x-search). |
 
 Tool responses are returned as JSON text. Successful ask calls include the
 extracted `answer`, a Markdown `responsePath`, nonce marker metadata, and
@@ -197,6 +198,34 @@ llm_tmux_ask(provider="codex", model="gpt-5.5", inputPath="/path/to/prompt.md")
 llm_headless_ask(provider="claude", model="opus", markdown="# Task\n\n...")
 llm_headless_ask(provider="agy", model="gemini-3.8-flash-low", markdown="# Task\n\n...")
 ```
+
+## X search
+
+`llm_x_search` runs a one-shot `grok` with its X search tools (other
+providers' CLIs cannot search X) and returns structured posts: `url`,
+`author`, `createdAt`, `text`, like/repost/reply counts, and `media` (type,
+URL, preview URL, duration, alt text), plus a short `summary`. A Markdown copy
+goes to `responses/grok/<nonce>.x-search.md`.
+
+```text
+llm_x_search(query="claude code", limit=10)
+llm_x_search(query="from:NASA filter:images", media="download")
+llm_x_search(query="artemis", mode="top", since="2026-10-01", media="describe")
+```
+
+Options: `mode` (`latest` or `top`), `limit` (up to 50), `from`, `since`,
+`until` (YYYY-MM-DD), `lang`, `model`, and `media`:
+
+| `media` | What you get | Stored on disk |
+| --- | --- | --- |
+| `urls` (default) | Media URLs and details only. | Nothing. |
+| `describe` | Grok looks at each photo, and at still frames of each video, and writes a `description`. Slower (minutes). | Nothing (Grok deletes what it fetched). |
+| `download` | Photos saved as files (`path`); with `includeVideo: true` also videos and GIFs, plus five still frames per video (`frames`) when `ffmpeg` is installed. | `media/<nonce>/`, at most 10 files and 50 MB per search, and only from X's media hosts. |
+
+Every provider CLI tested (Claude, Codex, Antigravity, Grok) can look at a
+downloaded image file, but none can play a video, which is why videos come
+with still frames. Install `ffmpeg` to get them (`winget install Gyan.FFmpeg`
+on Windows).
 
 ## Provider Behavior
 
@@ -360,7 +389,12 @@ It contains:
 - `inputs/` Markdown inputs
 - `requests/` generated internal prompts
 - `responses/` Markdown model outputs and raw logs
+- `media/` media downloaded by `llm_x_search`
 - `workdirs/` scratch workdirs for each provider
+
+Files in `inputs/`, `requests/`, `responses/`, and `media/` older than
+`LLM_ROUTER_MCP_RETENTION_DAYS` (default 14; `0` keeps everything) are deleted
+when the server starts and every hour after.
 
 Runtime state may contain private project details and model responses. On
 Linux and macOS its directories are created with mode `0700` and its files
@@ -384,6 +418,7 @@ a fallback file with the whole captured history.
 | `LLM_ROUTER_MCP_<PROVIDER>_SESSION` | Default tmux session name. |
 | `LLM_ROUTER_MCP_PERMISSIONS` | `full` (default) or `scoped`; see [Permissions](#permissions). |
 | `LLM_ROUTER_MCP_STALL_MS` | Default `stallMs`: how long an unchanged screen may last before a wait gives up (300000). |
+| `LLM_ROUTER_MCP_RETENTION_DAYS` | Days to keep state files before they are deleted (14; `0` keeps them). |
 | `LLM_ROUTER_MCP_<PROVIDER>_INPUT_MODE`, `LLM_ROUTER_MCP_INPUT_MODE` | `paste` or `file`. |
 | `LLM_ROUTER_MCP_<PROVIDER>_OUTPUT_MODE`, `LLM_ROUTER_MCP_OUTPUT_MODE` | `file` or `pane`. |
 | `LLM_ROUTER_MCP_<PROVIDER>_READY_PATTERN` | Regular expression for the CLI's input prompt. |

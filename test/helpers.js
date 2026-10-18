@@ -66,8 +66,12 @@ export async function installFakeClis(t) {
     const scriptDir = path.join(fakeBin, "node_modules", "fake-llm", "bin");
     await fs.mkdir(scriptDir, { recursive: true });
     await fs.copyFile(FAKE_LLM, path.join(scriptDir, "fake-llm.js"));
-    await fs.writeFile(path.join(fakeBin, "codex.cmd"), npmShim("node_modules\\fake-llm\\bin\\fake-llm.js"));
-    for (const name of ["claude", "grok", "agy"]) {
+    // Shims run by node directly; grok's JSON schema argument has quotes,
+    // which cmd.exe cannot carry.
+    for (const name of ["codex", "grok"]) {
+      await fs.writeFile(path.join(fakeBin, `${name}.cmd`), npmShim("node_modules\\fake-llm\\bin\\fake-llm.js"));
+    }
+    for (const name of ["claude", "agy"]) {
       await fs.writeFile(path.join(fakeBin, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${FAKE_LLM}" %*\r\n`);
     }
   } else {

@@ -10,7 +10,39 @@ if (args.includes("--version") || args.includes("version")) {
   process.exit(0);
 }
 
-if (isHeadless(args)) {
+if (args.includes("--json-schema")) {
+  // grok's structured X search answer.
+  const prompt = readHeadlessPrompt(args);
+  const mediaUrl = process.env.FAKE_X_MEDIA_URL || "https://pbs.twimg.com/media/fake.jpg";
+  const result = {
+    summary: "Fake posts about the query.",
+    posts: [
+      {
+        url: "https://x.com/fake/status/1",
+        author: "Fake (@fake)",
+        createdAt: "2026-10-18T00:00:00Z",
+        text: `about ${/Query: (.*)/.exec(prompt)?.[1] || ""}`,
+        likes: 3,
+        media: [
+          { type: "photo", url: mediaUrl, altText: "a fake photo" },
+          { type: "photo", url: "https://example.com/not-x-media.jpg" },
+          { type: "video", url: mediaUrl.replace(/\.jpg$/, ".mp4"), durationMs: 2000 }
+        ]
+      }
+    ]
+  };
+  const textual = prompt.includes("FAKE_TEXT_JSON");
+  process.stdout.write(
+    JSON.stringify({
+      // Like grok when the model writes a placeholder before the real object.
+      text: textual
+        ? `Here you go: {"summary":"","posts":[]}${JSON.stringify(result)}`
+        : JSON.stringify(result),
+      structuredOutput: textual ? null : result,
+      total_cost_usd: 0.01
+    })
+  );
+} else if (isHeadless(args)) {
   const prompt = readHeadlessPrompt(args);
   const outputIndex = args.indexOf("--output-last-message");
   if (outputIndex !== -1 && args[outputIndex + 1]) {

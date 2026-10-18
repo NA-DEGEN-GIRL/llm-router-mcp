@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -58,7 +59,8 @@ test("stdio MCP server exposes the unified LLM router tools", async (t) => {
     "llm_tmux_status",
     "llm_tmux_wait",
     "llm_tmux_wait_start",
-    "llm_write_input"
+    "llm_write_input",
+    "llm_x_search"
   ]);
 
   const listed = parseToolResult(
@@ -152,21 +154,38 @@ test("a client that disconnects takes running headless CLIs with it", async (t) 
     });
   }
 
-  const client = await connect(t, { LLM_ROUTER_MCP_PATH_PREFIX: fakeBin });
-  const call = client
-    .callTool({
+  // Raw stdio rather than the SDK client, whose close() force-kills a server
+  // that takes more than two seconds to exit.
+  const server = spawn(process.execPath, ["bin/llm-router-mcp.js"], {
+    env: { ...process.env, LLM_ROUTER_MCP_PATH_PREFIX: fakeBin, LLM_ROUTER_MCP_TMUX_LABEL: TMUX_LABEL },
+    stdio: ["pipe", "pipe", "inherit"]
+  });
+  const exited = new Promise((resolve) => server.on("exit", resolve));
+  const send = (message) => server.stdin.write(`${JSON.stringify(message)}\n`);
+  send({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } }
+  });
+  send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  send({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
       name: "llm_headless_ask",
       arguments: { provider: "claude", markdown: "slow", stateDir, cwd: process.cwd(), timeoutMs: 120000 }
-    })
-    .catch(() => null);
+    }
+  });
   let pid = null;
   for (let i = 0; i < 300 && pid === null; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     pid = Number(await fs.readFile(pidFile, "utf8").catch(() => "")) || null;
   }
   assert.ok(pid, "the slow CLI started");
-  await client.close();
-  await call;
+  server.stdin.end();
+  await exited;
 
   let alive = true;
   for (let i = 0; i < 150 && alive; i += 1) {

@@ -14,6 +14,7 @@ import {
   headlessAsk,
   killSession,
   listProviders,
+  pruneState,
   sendInput,
   status,
   terminateChildren,
@@ -22,6 +23,7 @@ import {
   waitForStart,
   writeInputFile
 } from "./core.js";
+import { MEDIA_MODES, xSearch } from "./x-search.js";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -356,6 +358,41 @@ export async function main() {
     },
     tool(async (args) => ({ killed: await killSession(args) }))
   );
+
+  server.registerTool(
+    "llm_x_search",
+    {
+      title: "Search X (Twitter) through Grok",
+      description:
+        "Search posts on X with Grok's X search tools, which other providers lack. Returns structured posts (URL, author, time, text, counts) with their photos and videos. media: urls (default) returns media URLs only; describe has Grok look at photos and video frames and describe them; download saves photos (and videos with includeVideo) under the state directory so you can open them, with still frames for videos when ffmpeg is installed.",
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .describe("What to search for. X search operators such as from:, filter:images, or min_faves: work."),
+        mode: z.enum(["latest", "top"]).optional().describe("latest (default) or top posts."),
+        limit: z.number().int().min(1).max(50).optional().describe("Maximum posts, default 10."),
+        from: z.string().optional().describe("Only posts from this handle."),
+        since: z.string().optional().describe("Posted on or after this date (YYYY-MM-DD)."),
+        until: z.string().optional().describe("Posted before this date (YYYY-MM-DD)."),
+        lang: z.string().optional().describe("Language code, such as en or ko."),
+        media: z.enum(MEDIA_MODES).optional(),
+        includeVideo: z
+          .boolean()
+          .optional()
+          .describe("With media=download, also download videos and GIFs (up to 10 files and 50 MB per search)."),
+        model: optionalCommon.model,
+        timeoutMs: optionalCommon.timeoutMs,
+        stateDir: optionalCommon.stateDir
+      }
+    },
+    tool(async (args, extra) => await xSearch({ ...args, signal: extra.signal }))
+  );
+
+  // Old prompts, answers, and media go after the retention period.
+  const prune = () => pruneState().catch(() => {});
+  prune();
+  setInterval(prune, 60 * 60 * 1000).unref();
 
   await server.connect(new StdioServerTransport());
 

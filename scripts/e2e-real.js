@@ -151,6 +151,21 @@ async function runProvider(provider) {
         startMissing: long.startMissing
       }
     );
+    if (provider === "grok") {
+      // X search with photos downloaded (videos are large).
+      const x = await call("llm_x_search", {
+        query: "from:NASA filter:images",
+        limit: 3,
+        media: "download",
+        timeoutMs
+      });
+      const photos = x.posts.flatMap((post) => post.media).filter((item) => item.path);
+      check(results, "x search with photos", x.posts.length > 0 && photos.length > 0, {
+        posts: x.posts.length,
+        photos: photos.length,
+        first: x.posts[0]?.url
+      });
+    }
   } catch (error) {
     check(results, "error", false, error.message);
   } finally {

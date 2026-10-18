@@ -930,7 +930,8 @@ export async function sendInput(options = {}) {
   const config = providerConfig(provider);
   const sessionName = resolveSessionName(provider, options.sessionName);
   const stateDir = path.resolve(options.stateDir || defaultStateDir());
-  const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  // Validated here; the wait itself is waitForResponse's.
+  normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
   const nonce = options.nonce || makeNonce();
   const { startMarker, doneMarker } = markerSet(provider, nonce);
   const inputMode = resolveInputMode(provider, options.inputMode);
@@ -1127,16 +1128,6 @@ export async function waitForResponse(options = {}) {
     if (options.signal?.aborted) {
       return await incomplete({ cancelled: true }, "tmux wait was cancelled before done marker");
     }
-    if (Date.now() > deadline) {
-      // Still working: give it another window, up to the cap.
-      if (Date.now() - lastChangeAt < stallMs && deadline < hardDeadline) {
-        deadline = Math.min(deadline + windowMs, hardDeadline);
-        extensions += 1;
-        await progress.report(`${config.displayName} is still working; waiting longer`, true);
-      } else {
-        break;
-      }
-    }
 
     let pane;
     try {
@@ -1262,6 +1253,18 @@ export async function waitForResponse(options = {}) {
           ? `${config.displayName} is answering`
           : `waiting for ${config.displayName} to start`
       );
+    }
+
+    // Checked after a look at the screen, so a wait always reads it once.
+    if (Date.now() > deadline) {
+      // Still working: give it another window, up to the cap.
+      if (Date.now() - lastChangeAt < stallMs && deadline < hardDeadline) {
+        deadline = Math.min(deadline + windowMs, hardDeadline);
+        extensions += 1;
+        await progress.report(`${config.displayName} is still working; waiting longer`, true);
+      } else {
+        break;
+      }
     }
 
     await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
@@ -1827,7 +1830,7 @@ async function pathExists(filePath) {
 }
 
 // Runtime state holds prompts and answers; keep it to the owner on POSIX.
-async function ensurePrivateDir(dir) {
+export async function ensurePrivateDir(dir) {
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   if (!IS_WINDOWS) {
     // An older version created it with the default mode.
@@ -1835,7 +1838,7 @@ async function ensurePrivateDir(dir) {
   }
 }
 
-async function writePrivateFile(filePath, content) {
+export async function writePrivateFile(filePath, content) {
   await fs.writeFile(filePath, content, { encoding: "utf8", mode: 0o600 });
 }
 
@@ -2275,7 +2278,7 @@ function progressReporter(onProgress, startedAt) {
 
 
 
-async function ensureDefaultWorkDir(provider, stateDir) {
+export async function ensureDefaultWorkDir(provider, stateDir) {
   const config = providerConfig(provider);
   const cwd = defaultWorkDir(provider, stateDir);
   await ensurePrivateDir(cwd);
@@ -2722,4 +2725,54 @@ function durationForAgy(timeoutMs) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Deletes runtime files older than the retention period (inputs, prompts,
+ * answers, responses, downloaded media) so the state directory does not grow
+ * without end. Workdirs are left alone: CLIs keep their own state there.
+ */
+export async function pruneState(stateDir = defaultStateDir(), days = retentionDays()) {
+  if (!days) {
+    return { removed: 0 };
+  }
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  const walk = async (dir, removeEmpty) => {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath, removeEmpty);
+        // media/<nonce> folders go once they are empty.
+        if (removeEmpty) {
+          await fs.rmdir(entryPath).catch(() => {});
+        }
+      } else if (entry.isFile()) {
+        const stats = await fs.stat(entryPath).catch(() => null);
+        if (stats && stats.mtimeMs < cutoff) {
+          await fs.rm(entryPath, { force: true }).catch(() => {});
+          removed += 1;
+        }
+      }
+    }
+  };
+  for (const sub of ["inputs", "requests", "responses", "media"]) {
+    await walk(path.join(path.resolve(stateDir), sub), sub === "media");
+  }
+  return { removed };
+}
+
+function retentionDays() {
+  const value = process.env.LLM_ROUTER_MCP_RETENTION_DAYS;
+  if (value === undefined || value === "") {
+    return 14;
+  }
+  const days = Number(value);
+  return Number.isFinite(days) && days > 0 ? days : 0;
 }
