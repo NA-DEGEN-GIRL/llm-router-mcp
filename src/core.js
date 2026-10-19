@@ -2507,6 +2507,11 @@ function childEnv(extra = {}) {
     path.join(home, ".npm-global", "bin"),
     // Grok's installer puts it here and only adds it to shell profiles.
     path.join(home, ".grok", "bin"),
+    // winget command aliases (ffmpeg and others), for clients started before
+    // the install changed PATH.
+    ...(IS_WINDOWS && process.env.LOCALAPPDATA
+      ? [path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links")]
+      : []),
     env[pathKey] || ""
   ]
     .filter(Boolean)

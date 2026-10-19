@@ -424,7 +424,7 @@ a fallback file with the whole captured history.
 | `LLM_ROUTER_MCP_<PROVIDER>_READY_PATTERN` | Regular expression for the CLI's input prompt. |
 | `LLM_ROUTER_MCP_TMUX_LABEL`, `LLM_ROUTER_MCP_TMUX_SOCKET` | Use a separate tmux server (`tmux -L` / `-S`). |
 | `LLM_ROUTER_MCP_TMUX_JOIN_LINES` | `1` or `0` to force `capture-pane -J` on or off. |
-| `LLM_ROUTER_MCP_PATH_PREFIX` | Directories searched before `PATH` (`~/.local/bin`, `~/.npm-global/bin`, and `~/.grok/bin` are always added). |
+| `LLM_ROUTER_MCP_PATH_PREFIX` | Directories searched before `PATH` (`~/.local/bin`, `~/.npm-global/bin`, `~/.grok/bin`, and on Windows WinGet's `Links` folder are always added). |
 | `LLM_ROUTER_MCP_SCRUB_ENV` | `0` keeps variables that tie a process to the launching Claude Code session (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, ...). Otherwise they are removed from headless CLIs and blanked (`new-session -e NAME=`) in new tmux sessions when the tmux server has them. |
 
 ## Troubleshooting
